@@ -80,9 +80,9 @@ if not image_id:
         print(f"Failed to auto-fetch image: {e}")
 
 # ---------------------------------------------------------------------------
-# 3. PROVISIONING LOOP
+# 3. PROVISIONING LOOP (MAX 300 ATTEMPTS = ~5 HOURS RUNTIME)
 # ---------------------------------------------------------------------------
-max_attempts = 60
+max_attempts = 300
 shape = "VM.Standard.A1.Flex"
 
 print(f"Targeting Shape: {shape} ({ocpus} OCPU / {memory_in_gbs} GB RAM)")
