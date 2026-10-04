@@ -5,15 +5,15 @@ import oci
 # ---------------------------------------------------------------------------
 # 1. RETRIEVE CONFIGURATION FROM GITHUB SECRETS & VARIABLES
 # ---------------------------------------------------------------------------
-user_id = os.getenv("OCI_USER_ID")
-fingerprint = os.getenv("OCI_FINGERPRINT")
-tenancy_id = os.getenv("OCI_TENANCY_ID")
-region = os.getenv("OCI_REGION", "ap-singapore-1")
-private_key = os.getenv("OCI_PRIVATE_KEY")
+user_id = os.getenv("OCI_USER_ID", "").strip()
+fingerprint = os.getenv("OCI_FINGERPRINT", "").strip()
+tenancy_id = os.getenv("OCI_TENANCY_ID", "").strip()
+region = os.getenv("OCI_REGION", "ap-singapore-2").strip()
+private_key = os.getenv("OCI_PRIVATE_KEY", "").strip()
 
-subnet_id = os.getenv("OCI_SUBNET_ID")
-image_id = os.getenv("OCI_IMAGE_ID")
-public_ssh_key = os.getenv("OCI_PUBLIC_SSH_KEY")
+subnet_id = os.getenv("OCI_SUBNET_ID", "").strip()
+image_id = os.getenv("OCI_IMAGE_ID", "").strip()
+public_ssh_key = os.getenv("OCI_PUBLIC_SSH_KEY", "").strip()
 
 # Retrieve instance specs from GitHub Variables (Default: 2 OCPU / 12 GB RAM)
 try:
@@ -23,12 +23,11 @@ except ValueError:
     ocpus = 2.0
     memory_in_gbs = 12.0
 
-# Verify critical secrets are loaded
-if not all([user_id, fingerprint, tenancy_id, private_key, subnet_id, image_id, public_ssh_key]):
-    print("CRITICAL ERROR: One or more required OCI Secrets are missing from GitHub Repository Secrets!")
+if not all([user_id, fingerprint, tenancy_id, private_key, subnet_id, public_ssh_key]):
+    print("CRITICAL ERROR: Required OCI Secrets are missing from GitHub Repository Secrets!")
     exit(1)
 
-# Format private key in case newlines were lost during upload
+# Format private key in case newlines were lost
 if "-----BEGIN" in private_key and "\n" not in private_key:
     private_key = private_key.replace("-----BEGIN PRIVATE KEY-----", "-----BEGIN PRIVATE KEY-----\n")
     private_key = private_key.replace("-----END PRIVATE KEY-----", "\n-----END PRIVATE KEY-----")
@@ -42,7 +41,7 @@ config = {
 }
 
 # ---------------------------------------------------------------------------
-# 2. INITIALIZE OCI COMPUTE CLIENT
+# 2. INITIALIZE OCI CLIENTS
 # ---------------------------------------------------------------------------
 try:
     compute_client = oci.core.ComputeClient(config)
@@ -52,14 +51,33 @@ except Exception as e:
     print(f"Authentication Failed: {e}")
     exit(1)
 
-# Dynamically fetch Availability Domains for the region or fallback to Singapore AD
+# Fetch Availability Domains
 try:
     ad_list = identity_client.list_availability_domains(tenancy_id).data
     ads = [ad.name for ad in ad_list]
     print(f"Found Availability Domains: {ads}")
 except Exception as e:
-    print(f"Warning: Could not fetch ADs dynamically ({e}). Falling back to default Singapore AD.")
-    ads = [f"{tenancy_id}:AP-SINGAPORE-1-AD-1"]
+    print(f"Warning: Could not fetch ADs dynamically ({e}). Falling back to default AD.")
+    ads = [f"{tenancy_id}:AP-SINGAPORE-2-AD-1"]
+
+# Auto-resolve Image ID if missing or invalid
+if not image_id:
+    print("OCI_IMAGE_ID not provided. Searching for latest Canonical Ubuntu ARM image...")
+    try:
+        images = compute_client.list_images(
+            compartment_id=tenancy_id,
+            operating_system="Canonical Ubuntu",
+            shape="VM.Standard.A1.Flex",
+            sort_by="TIMECREATED",
+            sort_order="DESC"
+        ).data
+        if images:
+            image_id = images[0].id
+            print(f"Auto-selected Image ID: {image_id}")
+        else:
+            print("No suitable Ubuntu image found automatically.")
+    except Exception as e:
+        print(f"Failed to auto-fetch image: {e}")
 
 # ---------------------------------------------------------------------------
 # 3. PROVISIONING LOOP
@@ -97,21 +115,26 @@ for attempt in range(1, max_attempts + 1):
 
         try:
             response = compute_client.launch_instance(launch_details)
-            print("SUCCESS! Instance created successfully!")
+            print("SUCCESS! Authorized Server creation initialized perfectly.")
             print(f"Instance ID: {response.data.id}")
             exit(0)
         except oci.exceptions.ServiceError as e:
-            if e.status == 500 or "Out of host capacity" in str(e.message) or "LimitExceeded" in str(e.message):
-                print(f"-> Capacity/Limit Issue in {ad}: {e.message}")
-            elif e.status == 401 or "Authentication" in str(e.message):
-                print(f"-> API Error: {e.message}")
-                print("Please verify OCI_PRIVATE_KEY, OCI_FINGERPRINT, and OCI_USER_ID in GitHub Secrets.")
-                exit(1)
+            if e.status == 500 or "Out of host capacity" in str(e.message) or "LimitExceeded" in str(e.message) or "Capacity" in str(e.message):
+                print(f"-> Capacity Unavailable. Resting 60 seconds...")
+                time.sleep(60)
+            elif e.status == 429:
+                print("-> Rate limited (Too many requests). Resting 30 seconds...")
+                time.sleep(30)
+            elif e.status == 404:
+                print(f"-> Resource Not Found (404). Please verify OCI_SUBNET_ID and OCI_IMAGE_ID.")
+                print(f"   Current Subnet ID: {subnet_id}")
+                print(f"   Current Image ID: {image_id}")
+                time.sleep(10)
             else:
                 print(f"-> Error ({e.status}): {e.message}")
+                time.sleep(10)
         except Exception as e:
             print(f"-> Unexpected Error: {e}")
-
-    time.sleep(10)
+            time.sleep(10)
 
 print("Loop finished without securing capacity. Will retry on next scheduled run.")
