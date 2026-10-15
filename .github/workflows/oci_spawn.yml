@@ -1,28 +1,30 @@
-name: Continuous OCI Python SDK Provisioner Loop
+name: OCI A1 Free VM retry
 
 on:
+  workflow_dispatch:
   schedule:
-    - cron: '0 */5 * * *'  # Runs every 5 hours automatically
-  workflow_dispatch:        # Allows manual execution triggers
+    - cron: '17 */5 * * *'
+
+# Serialize schedule/manual runs so two bots cannot race to create the VM.
+concurrency:
+  group: oci-a1-provisioner-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
 
 jobs:
-  attempt-build:
+  provision:
     runs-on: ubuntu-latest
-    timeout-minutes: 360    # Benarkan workflow berjalan sehingga 6 jam
-
+    timeout-minutes: 360
     steps:
-      - name: Check out repository code
-        uses: actions/checkout@v4
-
-      - name: Set up Python Environment
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-
-      - name: Install SDK Requirements
+      - name: Install dependencies
         run: pip install -r requirements.txt
-
-      - name: Execute Python Provisioning Engine
+      - name: Retry A1 VM launch
         env:
           PYTHONUNBUFFERED: "1"
           OCI_USER_ID: ${{ secrets.OCI_USER_ID }}
@@ -32,7 +34,7 @@ jobs:
           OCI_REGION: ${{ secrets.OCI_REGION }}
           OCI_SUBNET_ID: ${{ secrets.OCI_SUBNET_ID }}
           OCI_IMAGE_ID: ${{ secrets.OCI_IMAGE_ID }}
-          OCI_PUBLIC_SSH_KEY: ${{ secrets.OCI_PUBLIC_SSH_KEY }} 
+          OCI_PUBLIC_SSH_KEY: ${{ secrets.OCI_PUBLIC_SSH_KEY }}
           OCI_OCPUS: ${{ vars.OCI_OCPUS }}
           OCI_MEMORY_IN_GBS: ${{ vars.OCI_MEMORY_IN_GBS }}
         run: python "Ampere 12 ram 2 cpu/bot.py"
